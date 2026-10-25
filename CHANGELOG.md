@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `tia_hmi_set_widget_property`: collection elements in the property path. `TrendAreas[0]` takes an element by
+  position (index = current count appends one when the collection has a parameterless `Create()`, e.g. a second
+  trend); `TrendAreas[area1].LeftValueAxes[ax]` takes it by name and creates it when missing.
+- Multilingual texts can be written for one language only with `@culture`: `Text@en-US`,
+  `TrendAreas[0].Trends[1].DisplayName@en-US`. Without it every language still gets the same text.
+- `tia_hmi_get_software_object` and `tia_hmi_set_software_property`: read and change objects of the Unified HMI
+  software that are not screen items (alarm classes and their state colours, runtime settings, tags, connections),
+  with the same path rules.
+
+### Fixed
+
+- `tia_connect` with `projectPath` kept the current instance when already attached. With several TIA Portal
+  instances open it now detaches and attaches to the one holding the requested project.
+
 ## 1.0.1
 
 ### Fixed

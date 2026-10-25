@@ -160,6 +160,9 @@ try {
         $screens = (Tool 'tia_list_hmi_screens').Data.screens
         $null = Tool 'tia_hmi_list_tags'
         $null = Tool 'tia_hmi_list_alarms'
+        $classes = Tool 'tia_hmi_get_software_object' @{ path = 'AlarmClasses' }
+        Check '  alarm classes are listed as a collection' ($classes.Data.count -gt 0) ($classes.Text -replace '\s+', ' ')
+        $null = Tool 'tia_hmi_get_software_object' @{ path = 'NoSuchPart' } -Expect error -Match 'no readable part'
         if ($screens) {
             $screenName = ($screens | Sort-Object items -Descending | Select-Object -First 1).name
             $screen = Tool 'tia_hmi_get_screen' @{ screen = $screenName }
@@ -418,6 +421,13 @@ END_FUNCTION_BLOCK
         $set = Tool 'tia_hmi_set_widget_property' @{ screen = 'MCPTEST_Screen'; item = 'Title'; property = 'Font.Weight'; value = 'Bold' }
         Check '  a property change is read back and returns the previous value' ($set.Data.set -eq $true -and $set.Data.value -eq 'Bold' -and $null -ne $set.Data.previous) ($set.Text -replace '\s+', ' ')
         $null = Tool 'tia_hmi_set_widget_property' @{ screen = 'MCPTEST_Screen'; item = 'Title'; property = 'Font.Weight'; value = 'Heavyish' } -Expect error -Match 'Valid values'
+        if ($culture) {
+            $one = Tool 'tia_hmi_set_widget_property' @{ screen = 'MCPTEST_Screen'; item = 'Title'; property = "Text@$culture"; value = 'One language' }
+            Check '  a text is written for one language' ($one.Data.set -eq $true -and $one.Data.value -eq 'One language') ($one.Text -replace '\s+', ' ')
+        }
+        $null = Tool 'tia_hmi_set_widget_property' @{ screen = 'MCPTEST_Screen'; item = 'Title'; property = 'Text@xx-XX'; value = 'x' } -Expect error -Match 'is not in the project'
+        $null = Tool 'tia_hmi_set_widget_property' @{ screen = 'MCPTEST_Screen'; item = 'Title'; property = 'Font.Weight@en-US'; value = 'Bold' } -Expect error -Match 'not a multilingual text'
+        $null = Tool 'tia_hmi_set_widget_property' @{ screen = 'MCPTEST_Screen'; item = 'Title'; property = 'Font[0].Size'; value = '12' } -Expect error -Match 'not a collection'
         $null = Tool 'tia_hmi_set_widget_color' @{ screen = 'MCPTEST_Screen'; item = 'Box'; property = 'BackColor'; color = 'NotAColour' } -Expect error -Match 'Unknown colour'
         $null = Tool 'tia_hmi_set_widget_color' @{ screen = 'MCPTEST_Screen'; item = 'Box'; property = 'BackColor'; color = '255,128,0' }
         $mv = Tool 'tia_hmi_set_item_bounds' @{ screen = 'MCPTEST_Screen'; item = 'Title'; left = 40 }

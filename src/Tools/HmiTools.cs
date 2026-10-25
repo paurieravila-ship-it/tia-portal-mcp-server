@@ -205,17 +205,42 @@ namespace TiaMcpServer.Tools
             r.Add("tia_hmi_set_widget_property", Group, Safety.Write, "Set an item property",
                     "Set one property of a screen item (or of the screen) by name; the value is converted to the " +
                     "property's type (number, bool, enum name, colour, text). Nested parts use a dotted path: " +
-                    "\"Font.Size\", \"Content.ContentMode\". The property is read back afterwards: 'set' is true only " +
+                    "\"Font.Size\", \"Content.ContentMode\". Collection elements use brackets: \"TrendAreas[0]\" takes " +
+                    "an existing element by position (index = current count appends a new one, e.g. \"Trends[1]\" " +
+                    "when there is one trend), \"TrendAreas[area1].LeftValueAxes[ax].BeginValue\" takes it by name " +
+                    "and creates it if missing. Multilingual texts take one language with '@culture': \"Text@en-US\", " +
+                    "\"TrendAreas[0].Trends[1].DisplayName@en-US\" (without it every language gets the same text). " +
+                    "The property is read back afterwards: 'set' is true only " +
                     "if it now holds the requested value (TIA sometimes ignores an assignment without an error), " +
                     "'value' is what it reads and 'previous' what it was. Discover properties with tia_hmi_get_item.")
                 .Str("device", Device)
                 .Str("screen", Screen, required: true)
                 .Str("item", ItemOrScreen, required: true)
-                .Str("property", "Property name or dotted path, e.g. BackColor, Font.Size, IOFieldType, Visible", required: true)
+                .Str("property", "Property name or dotted path, e.g. BackColor, Font.Size, IOFieldType, Visible, TrendAreas[a1].Trends[t1].LineColor", required: true)
                 .Str("value", "New value as text", required: true)
                 .Idempotent()
                 .Run(a => tia.SetHmiWidgetProperty(a.Str("device"), a.ReqStr("screen"), a.ReqStr("item"),
                                                    a.ReqStr("property"), a.Str("value") ?? ""));
+
+            r.Add("tia_hmi_get_software_object", Group, Safety.ReadOnly, "Read an HMI software object",
+                    "Read any object of the WinCC Unified HMI software (not a screen item) by path from the HMI " +
+                    "software: \"AlarmClasses\" lists the alarm classes, \"AlarmClasses[Alarm].RaisedState\" shows " +
+                    "one state's colours, \"RuntimeSettings\" the runtime settings. Collections list their elements; " +
+                    "objects list their simple properties and the names of their parts. Empty path = the software root.")
+                .Str("device", Device)
+                .Str("path", "Path from the HMI software, e.g. AlarmClasses[Alarm].RaisedState (empty = root)")
+                .Run(a => tia.GetHmiSoftwareObject(a.Str("device"), a.Str("path")));
+
+            r.Add("tia_hmi_set_software_property", Group, Safety.Write, "Set an HMI software property",
+                    "Set one property of an HMI software object (alarm classes, runtime settings, ...) by path from " +
+                    "the HMI software, e.g. \"AlarmClasses[Alarm].RaisedState.BackColor\" = \"#E07B1A\". Same value " +
+                    "conversion, collection and '@culture' rules as tia_hmi_set_widget_property; read back afterwards. " +
+                    "Discover paths with tia_hmi_get_software_object.")
+                .Str("device", Device)
+                .Str("property", "Path from the HMI software, e.g. AlarmClasses[Warning].RaisedState.Flashing", required: true)
+                .Str("value", "New value as text", required: true)
+                .Idempotent()
+                .Run(a => tia.SetHmiSoftwareProperty(a.Str("device"), a.ReqStr("property"), a.Str("value") ?? ""));
 
             r.Add("tia_hmi_set_widget_color", Group, Safety.Write, "Set an item colour",
                     "Set a static colour property (BackColor, ForeColor, BorderColor, ...) of a screen item. For a " +

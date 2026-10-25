@@ -232,20 +232,36 @@ namespace TiaMcpServer
             var parts = path.Split('.');
             var current = target;
             for (int i = 0; i < parts.Length - 1; i++)
-            {
-                var step = current.GetType().GetProperty(parts[i]);
-                var next = step?.GetValue(current);
-                if (next == null)
-                    throw new InvalidOperationException(
-                        $"'{current.GetType().Name}' has no readable part '{parts[i]}' (in '{path}').");
-                current = next;
-            }
+                current = StepInto(current, parts[i], path);
 
             var last = parts[parts.Length - 1];
+            // "Text@en-US": write only that language of a multilingual text
+            string culture = null;
+            var at = last.IndexOf('@');
+            if (at > 0) { culture = last.Substring(at + 1).Trim(); last = last.Substring(0, at); }
             var prop = current.GetType().GetProperty(last);
             if (prop == null)
                 throw new InvalidOperationException(
                     $"'{current.GetType().Name}' has no property '{last}'. Use tia_hmi_get_item to list the properties.");
+
+            if (culture != null)
+            {
+                if (!typeof(MultilingualText).IsAssignableFrom(prop.PropertyType))
+                    throw new InvalidOperationException($"'{last}' is not a multilingual text; '@{culture}' does not apply.");
+                var items = ((MultilingualText)prop.GetValue(current)).Items.Cast<MultilingualTextItem>().ToList();
+                var item = items.FirstOrDefault(i =>
+                               string.Equals(i.Language?.Culture?.Name, culture, StringComparison.OrdinalIgnoreCase))
+                           ?? throw new InvalidOperationException(
+                               $"Language '{culture}' is not in the project. Available: " +
+                               string.Join(", ", items.Select(i => i.Language?.Culture?.Name)));
+                var before = PlainText(item.Text);
+                var html = (value ?? "").TrimStart().StartsWith("<body", StringComparison.OrdinalIgnoreCase)
+                    ? value
+                    : $"<body><p>{System.Net.WebUtility.HtmlEncode(value ?? "")}</p></body>";
+                item.Text = html;
+                var after = PlainText(item.Text) ?? "";
+                return new PropertyChange { Previous = before, Actual = after, Applied = after == PlainText(html) };
+            }
 
             if (typeof(MultilingualText).IsAssignableFrom(prop.PropertyType))
             {
@@ -269,6 +285,60 @@ namespace TiaMcpServer
 
             var readBack = prop.GetValue(current);
             return new PropertyChange { Previous = previous, Actual = FormatValue(readBack), Applied = SameValue(converted, readBack) };
+        }
+
+        private static readonly Regex CollectionStep = new Regex(@"^(\w+)\[([^\]]+)\]$");
+
+        /// <summary>
+        /// One step of a property path. "Font" reads a part; "TrendAreas[0]" takes an existing
+        /// element of a composition by position ("Trends[n]" with n = Count appends one when the
+        /// composition has a parameterless Create()); "TrendAreas[area1]" takes the element with that
+        /// name and creates it when the composition has Create(string) and it does not exist yet
+        /// (trend areas, trends, value / time axes ...).
+        /// </summary>
+        private static object StepInto(object current, string part, string path, bool create = true)
+        {
+            var m = CollectionStep.Match(part);
+            var propName = m.Success ? m.Groups[1].Value : part;
+            var next = current.GetType().GetProperty(propName)?.GetValue(current);
+            if (next == null)
+                throw new InvalidOperationException(
+                    $"'{current.GetType().Name}' has no readable part '{propName}' (in '{path}').");
+            if (!m.Success) return next;
+
+            var key = m.Groups[2].Value.Trim();
+            var items = (next as IEnumerable)?.Cast<object>().ToList()
+                ?? throw new InvalidOperationException($"'{propName}' is not a collection (in '{path}').");
+
+            if (int.TryParse(key, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
+            {
+                // One past the end appends, for compositions whose Create() takes no name (trends)
+                var append = next.GetType().GetMethod("Create", Type.EmptyTypes);
+                if (create && index == items.Count && append != null)
+                {
+                    try { return append.Invoke(next, null); }
+                    catch (TargetInvocationException ex) { throw ex.InnerException ?? ex; }
+                }
+                if (index < 0 || index >= items.Count)
+                    throw new InvalidOperationException(
+                        $"'{propName}' has {items.Count} element(s); index {index} does not exist (in '{path}'). " +
+                        "Address a new element by name, e.g. " + propName + "[myName], to create it.");
+                return items[index];
+            }
+
+            var found = items.FirstOrDefault(o =>
+                string.Equals(o.GetType().GetProperty("Name")?.GetValue(o) as string, key, StringComparison.OrdinalIgnoreCase));
+            if (found != null) return found;
+            if (!create)
+                throw new InvalidOperationException(
+                    $"No element '{key}' in '{propName}' (in '{path}'). Elements: " +
+                    string.Join(", ", items.Select(o => o.GetType().GetProperty("Name")?.GetValue(o) as string ?? "?")));
+
+            var createByName = next.GetType().GetMethod("Create", new[] { typeof(string) })
+                ?? throw new InvalidOperationException(
+                    $"No element '{key}' in '{propName}', and the collection cannot create one by name (in '{path}').");
+            try { return createByName.Invoke(next, new object[] { key }); }
+            catch (TargetInvocationException ex) { throw ex.InnerException ?? ex; }
         }
 
         /// <summary>All simple readable properties of an item; "parts" (Font, Content, ...) one level deep.</summary>
@@ -850,6 +920,66 @@ namespace TiaMcpServer
                 {
                     set = change.Applied,
                     item = TargetName(target),
+                    property = propertyPath,
+                    requested = value,
+                    value = change.Actual,
+                    previous = change.Previous,
+                    note = change.Applied ? null : NotAppliedNote
+                };
+            });
+        }
+
+        /// <summary>
+        /// Reads any object of the Unified HMI software by path from HmiSoftware
+        /// ("AlarmClasses", "AlarmClasses[Alarm].RaisedState", "RuntimeSettings"...).
+        /// Collections list their elements; objects list their simple properties and
+        /// the names of their parts / collections, for further navigation. Never creates.
+        /// </summary>
+        public object GetHmiSoftwareObject(string deviceName, string path)
+        {
+            var hmi = RequireHmiUnified(deviceName);
+            object current = hmi;
+            if (!string.IsNullOrWhiteSpace(path))
+                foreach (var part in path.Split('.'))
+                    current = StepInto(current, part, path, create: false);
+
+            if (current is IEnumerable seq && !(current is string))
+            {
+                var elements = seq.Cast<object>().Select((o, i) => new
+                {
+                    index = i,
+                    name = o.GetType().GetProperty("Name")?.GetValue(o) as string,
+                    type = o.GetType().Name
+                }).ToArray();
+                return new { path = path ?? "", type = current.GetType().Name, count = elements.Length, elements };
+            }
+
+            var parts = current.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.CanRead && p.GetIndexParameters().Length == 0 && p.Name != "Parent" &&
+                            !(p.PropertyType == typeof(string) || p.PropertyType.IsPrimitive || p.PropertyType.IsEnum ||
+                              p.PropertyType == typeof(Color) || typeof(MultilingualText).IsAssignableFrom(p.PropertyType)))
+                .Select(p => p.Name).OrderBy(n => n).ToArray();
+            return new
+            {
+                path = path ?? "",
+                type = current.GetType().Name,
+                properties = ReadProperties(current, 0),
+                parts,
+                note = "Navigate with path segments separated by '.', collections by [index] or [name]. " +
+                       "Change values with tia_hmi_set_software_property."
+            };
+        }
+
+        /// <summary>Sets a property of any Unified HMI software object (alarm classes, runtime settings, ...).</summary>
+        public object SetHmiSoftwareProperty(string deviceName, string propertyPath, string value)
+        {
+            var hmi = RequireHmiUnified(deviceName);
+            return Edit($"set {propertyPath} of HMI software", () =>
+            {
+                var change = SetPropertyPath(hmi, propertyPath, value);
+                return new
+                {
+                    set = change.Applied,
                     property = propertyPath,
                     requested = value,
                     value = change.Actual,

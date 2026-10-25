@@ -36,6 +36,19 @@ namespace TiaMcpServer
                 _tia = null;
             }
 
+            // Several projects open in separate TIA instances: switch when the
+            // caller asks for a project other than the attached one.
+            if (_tia != null && attachMode && !string.IsNullOrWhiteSpace(projectPath))
+            {
+                var current = Try(() => _project?.Path?.FullName);
+                if (!string.Equals(current, Path.GetFullPath(projectPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    _project = null;
+                    try { _tia.Dispose(); } catch { }
+                    _tia = null;
+                }
+            }
+
             if (_tia != null)
                 return State();
 
